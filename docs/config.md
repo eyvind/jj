@@ -291,6 +291,15 @@ diff.tool = "vimdiff"
 diff-invocation-mode = "file-by-file"
 ```
 
+The tool runs in the current directory by default, but can optionally be run in the
+parent of the left and right directories using the `diff-do-chdir` config.  This
+produces tidier output if the tool displays the directories prominently.
+
+```toml
+[merge-tools.vimdiff]
+diff-do-chdir = true
+```
+
 By default `jj` will display a warning when the command exits with a non-success
 error code. The `diff-expected-exit-codes` config can suppress this warning
 message for specific exit codes:
