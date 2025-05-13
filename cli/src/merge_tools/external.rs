@@ -17,6 +17,7 @@ use jj_lib::conflicts::ConflictMaterializeOptions;
 use jj_lib::conflicts::MIN_CONFLICT_MARKER_LEN;
 use jj_lib::conflicts::choose_materialized_conflict_marker_len;
 use jj_lib::conflicts::materialize_merge_result_to_bytes;
+use jj_lib::diff_presentation::LineCompareMode;
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::matchers::Matcher;
 use jj_lib::merge::Diff;
@@ -40,6 +41,7 @@ use super::diff_working_copies::set_readonly_recursively;
 use crate::config::CommandNameAndArgs;
 use crate::config::find_all_variables;
 use crate::config::interpolate_variables;
+use crate::diff_util::LineDiffOptions;
 use crate::ui::Ui;
 
 /// Merge/diff tool loaded from the settings.
@@ -59,6 +61,12 @@ pub struct ExternalMergeTool {
     pub diff_invocation_mode: DiffToolMode,
     /// Whether to execute the tool in the temporary diff directory
     pub diff_do_chdir: bool,
+    /// Arguments to pass to enable and disable color
+    pub enable_color_args: Vec<String>,
+    pub disable_color_args: Vec<String>,
+    /// Arguments to ignore whitespace
+    pub ignore_all_space_args: Vec<String>,
+    pub ignore_space_change_args: Vec<String>,
     /// Arguments to pass to the program when editing diffs.
     /// `$left` and `$right` are replaced with the corresponding directories.
     pub edit_args: Vec<String>,
@@ -118,6 +126,10 @@ impl Default for ExternalMergeTool {
             merge_tool_edits_conflict_markers: false,
             conflict_marker_style: None,
             diff_do_chdir: true,
+            enable_color_args: vec![],
+            disable_color_args: vec![],
+            ignore_all_space_args: vec![],
+            ignore_space_change_args: vec![],
             diff_invocation_mode: DiffToolMode::Dir,
         }
     }
@@ -449,6 +461,7 @@ pub async fn generate_diff(
     trees: Diff<&MergedTree>,
     matcher: &dyn Matcher,
     tool: &ExternalMergeTool,
+    diff_options: &LineDiffOptions,
     default_conflict_marker_style: ConflictMarkerStyle,
     width: usize,
 ) -> Result<(), DiffGenerateError> {
@@ -460,7 +473,14 @@ pub async fn generate_diff(
     diff_wc.set_right_readonly()?;
     let mut patterns = diff_wc.to_command_variables(true);
     patterns.insert("width", width.to_string());
-    invoke_external_diff(ui, writer, tool, diff_wc.temp_dir(), &patterns)
+    invoke_external_diff(
+        ui,
+        writer,
+        tool,
+        diff_wc.temp_dir(),
+        diff_options,
+        &patterns,
+    )
 }
 
 /// Invokes the specified `tool` directing its output into `writer`.
@@ -469,9 +489,9 @@ pub fn invoke_external_diff(
     writer: &mut dyn Write,
     tool: &ExternalMergeTool,
     diff_dir: &Path,
+    options: &LineDiffOptions,
     patterns: &HashMap<&str, String>,
 ) -> Result<(), DiffGenerateError> {
-    // TODO: Somehow propagate --color to the external command?
     let mut cmd = Command::new(&tool.program);
     let mut patterns = patterns.clone();
     if !tool.diff_do_chdir {
@@ -494,7 +514,26 @@ pub fn invoke_external_diff(
     } else {
         cmd.current_dir(diff_dir);
     }
-    cmd.args(interpolate_variables(&tool.diff_args, &patterns));
+    let (before_args, after_args) =
+        match &tool.diff_args.iter().position(|arg| arg == "$extra_args") {
+            Some(args_pos) => &(
+                &tool.diff_args[0..*args_pos],
+                &tool.diff_args[*args_pos + 1..],
+            ),
+            None => &(tool.diff_args.as_slice(), &[] as &[String]),
+        };
+    cmd.args(interpolate_variables(before_args, &patterns));
+    if ui.color() {
+        cmd.args(&tool.enable_color_args);
+    } else {
+        cmd.args(&tool.disable_color_args);
+    }
+    if options.compare_mode == LineCompareMode::IgnoreAllSpace {
+        cmd.args(&tool.ignore_all_space_args);
+    } else if options.compare_mode == LineCompareMode::IgnoreSpaceChange {
+        cmd.args(&tool.ignore_space_change_args);
+    }
+    cmd.args(interpolate_variables(after_args, &patterns));
 
     tracing::info!(?cmd, "Invoking the external diff generator:");
     let mut child = cmd

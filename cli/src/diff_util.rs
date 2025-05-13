@@ -169,7 +169,7 @@ pub enum DiffFormat {
     NameOnly,
     Git(Box<UnifiedDiffOptions>),
     ColorWords(Box<ColorWordsDiffOptions>),
-    Tool(Box<ExternalMergeTool>),
+    Tool(Box<ExternalMergeTool>, Box<LineDiffOptions>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -367,7 +367,9 @@ fn diff_formats_from_args(
             ensure_new(long_kind)?;
             let tool = diff_formatter_tool(settings, name)?
                 .unwrap_or_else(|| ExternalMergeTool::with_program(name));
-            long_format = Some(DiffFormat::Tool(Box::new(tool)));
+            let mut options = LineDiffOptions::default();
+            options.merge_args(args);
+            long_format = Some(DiffFormat::Tool(Box::new(tool), Box::new(options)));
         }
     }
     Ok([short_format, long_format])
@@ -393,7 +395,9 @@ fn default_diff_format(
             None
         }
         .unwrap_or_else(|| ExternalMergeTool::with_diff_args(&tool_args));
-        Ok(DiffFormat::Tool(Box::new(tool)))
+        let mut options = LineDiffOptions::default();
+        options.merge_args(args);
+        Ok(DiffFormat::Tool(Box::new(tool), Box::new(options)))
     }
 }
 
@@ -532,7 +536,7 @@ impl<'a> DiffRenderer<'a> {
                     )
                     .await?;
                 }
-                DiffFormat::Tool(tool) => {
+                DiffFormat::Tool(tool, options) => {
                     match tool.diff_invocation_mode {
                         DiffToolMode::FileByFile => {
                             let tree_diff = diff_stream();
@@ -544,6 +548,7 @@ impl<'a> DiffRenderer<'a> {
                                 conflict_labels,
                                 path_converter,
                                 tool,
+                                options,
                                 self.conflict_marker_style,
                                 width,
                             )
@@ -557,6 +562,7 @@ impl<'a> DiffRenderer<'a> {
                                 trees,
                                 matcher,
                                 tool,
+                                options,
                                 self.conflict_marker_style,
                                 width,
                             )
@@ -612,7 +618,7 @@ impl<'a> DiffRenderer<'a> {
                         &materialize_options,
                     )?;
                 }
-                DiffFormat::Tool(_) => {
+                DiffFormat::Tool(..) => {
                     // TODO: materialize commit description as file?
                 }
             }
@@ -1559,6 +1565,7 @@ pub async fn show_file_by_file_diff(
     conflict_labels: Diff<&ConflictLabels>,
     path_converter: &RepoPathUiConverter,
     tool: &ExternalMergeTool,
+    options: &LineDiffOptions,
     marker_style: ConflictMarkerStyle,
     width: usize,
 ) -> Result<(), DiffRenderError> {
@@ -1630,8 +1637,15 @@ pub async fn show_file_by_file_diff(
         };
 
         let mut writer = formatter.raw()?;
-        invoke_external_diff(ui, writer.as_mut(), tool, temp_dir.path(), patterns)
-            .map_err(DiffRenderError::DiffGenerate)?;
+        invoke_external_diff(
+            ui,
+            writer.as_mut(),
+            tool,
+            temp_dir.path(),
+            options,
+            patterns,
+        )
+        .map_err(DiffRenderError::DiffGenerate)?;
     }
     Ok::<(), DiffRenderError>(())
 }
